@@ -1,0 +1,39 @@
+name: CUDA C++ CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install CUDA Toolkit
+      uses: Jimver/cuda-toolkit@v0.2.18
+      id: cuda-toolkit
+      with:
+        # Specifies the exact CUDA version to install on the runner
+        cuda: '12.4.1' 
+
+    - name: Verify NVCC Installation
+      run: nvcc --version
+
+    - name: Configure CMake
+      # Generates the build files in the /build directory
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build Project
+      # Compiles the core library, CLI, and tests using 4 parallel threads
+      run: cmake --build build --config Release --parallel 4
+
+    - name: Run CTest
+      # Executes the GoogleTest binary. 
+      # WARNING: See the crucial note below regarding standard GitHub runners.
+      working-directory: ${{github.workspace}}/build
+      run: ctest --output-on-failure
