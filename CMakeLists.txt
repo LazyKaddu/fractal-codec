@@ -23,12 +23,19 @@ add_library(fractal_core STATIC
     src/io/VideoReader.cpp
 )
 
+# Find OpenCV
+find_package(OpenCV REQUIRED)
+
 # Generator expressions ensure that anything linking to fractal_core 
 # automatically knows where to find the headers in the include/ directory.
 target_include_directories(fractal_core PUBLIC 
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
+    ${OpenCV_INCLUDE_DIRS}
 )
+
+# Link OpenCV to fractal_core
+target_link_libraries(fractal_core PUBLIC ${OpenCV_LIBS})
 
 # Enable aggressive optimization for the core library in Release mode
 target_compile_options(fractal_core PRIVATE 
