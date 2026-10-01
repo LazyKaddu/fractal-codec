@@ -1,212 +1,196 @@
+#include "common.h"
 #include <cuda_runtime.h>
-#include <cstdint>
 #include <iostream>
 #include <vector>
 #include <fstream>
 #include <math.h>
 
 // ============================================================
-// Configuration
+// Helper: Map Isometry
 // ============================================================
-#define IMAGE_WIDTH 1024
-#define IMAGE_HEIGHT 1024
-#define RANGE_SIZE 4
-#define DOMAIN_SIZE 8
-
-// CRITICAL: Set this to match your CPU domain extractor!
-// If you stepped by 8 pixels, STRIDE is 8. 
-// If your domains overlapped by 4 pixels, STRIDE is 4.
-#define DOMAIN_STRIDE 8 
-
-const int RANGES_PER_ROW = IMAGE_WIDTH / RANGE_SIZE;
-const int DOMAINS_PER_ROW = (IMAGE_WIDTH - DOMAIN_SIZE) / DOMAIN_STRIDE + 1;
-const int TOTAL_RANGES = (IMAGE_WIDTH * IMAGE_HEIGHT) / (RANGE_SIZE * RANGE_SIZE);
-const int TOTAL_PIXELS = IMAGE_WIDTH * IMAGE_HEIGHT;
-
-struct FractalCode {
-    uint16_t domain_idx;
-    uint8_t isometry_id;
-    float contrast;
-    float brightness;
-};
-
-__constant__ uint8_t d_iso_lut_4x4[8][16];
+__device__ __forceinline__ int getIsoPixel(int px, int py, int dim, int iso) {
+    int nx = px, ny = py;
+    switch(iso) {
+        case 0: nx = px; ny = py; break;
+        case 1: nx = py; ny = (dim-1)-px; break;
+        case 2: nx = (dim-1)-px; ny = (dim-1)-py; break;
+        case 3: nx = (dim-1)-py; ny = px; break;
+        case 4: nx = (dim-1)-px; ny = py; break;
+        case 5: nx = py; ny = px; break;
+        case 6: nx = px; ny = (dim-1)-py; break;
+        case 7: nx = (dim-1)-py; ny = (dim-1)-px; break;
+    }
+    return ny * dim + nx;
+}
 
 // ============================================================
-// The Fast Decoder Kernel
+// The Quadtree Temporal Decode Kernel
 // ============================================================
-__global__ void decodeFractalKernel(
-    const FractalCode* d_codes,
-    const float* d_image_in,
-    float* d_image_out,
-    int total_ranges
+__global__ void hybridTemporalDecodeQuadtreeKernel(
+    const HybridCode* d_codes,
+    const float* d_in,
+    float* d_out,
+    int total_codes
 ) {
-    int range_idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (range_idx >= total_ranges) return;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= total_codes) return;
 
-    // Read the instruction for this specific 4x4 block
-    FractalCode code = d_codes[range_idx];
+    HybridCode code = d_codes[idx];
+    int rx = code.x;
+    int ry = code.y;
 
-    // Map the 1D Range Index back to 2D Image Coordinates
-    int range_x = (range_idx % RANGES_PER_ROW) * RANGE_SIZE;
-    int range_y = (range_idx / RANGES_PER_ROW) * RANGE_SIZE;
+    // Calculate block size dynamically based on depth: 
+    // 0=32, 1=16, 2=8, 3=4, 4=2
+    int size = 32 >> code.depth; 
 
-    // Map the 1D Domain Index back to 2D Image Coordinates
-    int domain_x = (code.domain_idx % DOMAINS_PER_ROW) * DOMAIN_STRIDE;
-    int domain_y = (code.domain_idx / DOMAINS_PER_ROW) * DOMAIN_STRIDE;
-
-    // Read the 8x8 domain from the source image, downsample, and apply transform
-    float downsampled_domain[16];
-
-    #pragma unroll
-    for (int py = 0; py < 4; py++) {
-        #pragma unroll
-        for (int px = 0; px < 4; px++) {
-            int dx = domain_x + (px * 2);
-            int dy = domain_y + (py * 2);
-
-            // Average the 2x2 pixels safely
-            float avg = 0.25f * (
-                d_image_in[(dy * IMAGE_WIDTH) + dx] +
-                d_image_in[(dy * IMAGE_WIDTH) + dx + 1] +
-                d_image_in[((dy + 1) * IMAGE_WIDTH) + dx] +
-                d_image_in[((dy + 1) * IMAGE_WIDTH) + dx + 1]
-            );
-
-            // Route it through the LUT instantly
-            uint8_t target_idx = d_iso_lut_4x4[code.isometry_id][py * 4 + px];
-            downsampled_domain[target_idx] = avg;
+    // 1. The Dynamic Temporal Skip (Can be 32x32, 16x16, 8x8, or 4x4)
+    if (code.domain_idx == 0xFFFF) {
+        for (int py = 0; py < size; py++) {
+            for (int px = 0; px < size; px++) {
+                int p_idx = (ry + py) * IMAGE_WIDTH + (rx + px);
+                d_out[p_idx] = d_in[p_idx];
+            }
         }
+        return;
     }
 
-    // Apply the Least-Squares Math and write to the new image buffer
-    #pragma unroll
-    for (int p = 0; p < 16; p++) {
-        int out_x = range_x + (p % 4);
-        int out_y = range_y + (p / 4);
+    // 2. Fractal Decode (Only executes at depth == 3, size == 4x4)
+    if (code.depth == 3) {
+        int dom_x = (code.domain_idx % (IMAGE_WIDTH / 8)) * 8;
+        int dom_y = (code.domain_idx / (IMAGE_WIDTH / 8)) * 8;
 
-        float pixel_val = (code.contrast * downsampled_domain[p]) + code.brightness;
-        
-        // Clamp to valid 0.0 - 1.0 range
-        pixel_val = fmaxf(0.0f, fminf(1.0f, pixel_val));
+        for (int p = 0; p < 16; p++) {
+            int px = p % 4;
+            int py = p / 4;
 
-        d_image_out[(out_y * IMAGE_WIDTH) + out_x] = pixel_val;
+            int iso_p = getIsoPixel(px, py, 4, code.isometry_id);
+            int iso_x = iso_p % 4;
+            int iso_y = iso_p / 4;
+
+            // Downsample the 8x8 domain to a single pixel (average 2x2 area)
+            float avg = 0.0f;
+            for (int dy = 0; dy < 2; dy++) {
+                for (int dx = 0; dx < 2; dx++) {
+                    avg += d_in[(dom_y + iso_y * 2 + dy) * IMAGE_WIDTH + (dom_x + iso_x * 2 + dx)];
+                }
+            }
+            avg *= 0.25f;
+
+            float val = (code.contrast * avg) + code.brightness;
+            d_out[(ry + py) * IMAGE_WIDTH + (rx + px)] = val;
+        }
+    }
+    // 3. Raw Pixel Fallback (Executes at depth == 4, size == 2x2)
+    else if (code.depth == 4) {
+        d_out[(ry + 0) * IMAGE_WIDTH + (rx + 0)] = code.raw_pixels[0];
+        d_out[(ry + 0) * IMAGE_WIDTH + (rx + 1)] = code.raw_pixels[1];
+        d_out[(ry + 1) * IMAGE_WIDTH + (rx + 0)] = code.raw_pixels[2];
+        d_out[(ry + 1) * IMAGE_WIDTH + (rx + 1)] = code.raw_pixels[3];
     }
 }
 
 // ============================================================
-// Simple Image Writer (Portable Gray Map)
+// Helpers: Load and Save
 // ============================================================
+bool loadRawImage(const char* filename, std::vector<float>& image_data) {
+    std::ifstream file(filename, std::ios::binary | std::ios::ate);
+    if (!file) return false;
+    std::streamsize size = file.tellg();
+    file.seekg(0, std::ios::beg);
+    image_data.resize(IMAGE_WIDTH * IMAGE_HEIGHT);
+    file.read(reinterpret_cast<char*>(image_data.data()), size);
+    return true;
+}
+
 bool writePGM(const char* filename, const std::vector<float>& image_data) {
     std::ofstream file(filename, std::ios::binary);
     if (!file) return false;
-
-    // PGM Header: Magic Number, Width, Height, Max Value
     file << "P5\n" << IMAGE_WIDTH << " " << IMAGE_HEIGHT << "\n255\n";
-
-    // Convert 0.0-1.0 floats back to 0-255 bytes
-    std::vector<uint8_t> byte_data(TOTAL_PIXELS);
-    for (int i = 0; i < TOTAL_PIXELS; i++) {
-        byte_data[i] = static_cast<uint8_t>(image_data[i] * 255.0f);
+    for (float val : image_data) {
+        float clamped = fminf(fmaxf(val, 0.0f), 1.0f);
+        uint8_t pixel = static_cast<uint8_t>(clamped * 255.0f);
+        file.write(reinterpret_cast<char*>(&pixel), 1);
     }
-
-    file.write(reinterpret_cast<char*>(byte_data.data()), TOTAL_PIXELS);
     return true;
 }
 
 // ============================================================
-// Main
+// Main Execution
 // ============================================================
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        std::cerr << "Usage: ./decoder <encoded_codes.bin>\n";
+    if (argc < 3) {
+        std::cerr << "Usage: ./decoder <prev_frame.bin> <encoded_temporal.bin>\n";
         return 1;
     }
-    const char* filename = argv[1];
 
-    // 1. Read the encoded binary file
-    std::vector<FractalCode> h_codes(TOTAL_RANGES);
-    std::ifstream file(filename, std::ios::binary);
-    if (!file) {
-        std::cerr << "Failed to open encoded file: " << filename << "\n";
+    const char* prev_file = argv[1];
+    const char* codes_file = argv[2];
+    int total_pixels = IMAGE_WIDTH * IMAGE_HEIGHT;
+
+    // 1. Load the Previous Frame
+    std::vector<float> h_prev_frame;
+    if (!loadRawImage(prev_file, h_prev_frame)) {
+        std::cerr << "Error loading previous frame.\n";
         return 1;
     }
-    
-    // Read the exact number of bytes for our array of structs
-    file.read(reinterpret_cast<char*>(h_codes.data()), TOTAL_RANGES * sizeof(FractalCode));
-    if (!file) {
-        std::cerr << "Warning: Could not read full 65,536 structs. File might be too small.\n";
-    }
-    std::cout << "Loaded " << TOTAL_RANGES << " fractal codes from " << filename << "\n";
 
-    // 2. Initialize the Constant Memory LUT
-    uint8_t h_iso_lut_4x4[8][16];
-    for (int iso = 0; iso < 8; iso++) {
-        for (int y = 0; y < 4; y++) {
-            for (int x = 0; x < 4; x++) {
-                int new_x = x, new_y = y;
-                switch (iso) {
-                    case 0: break;
-                    case 1: new_x = y; new_y = 3 - x; break;
-                    case 2: new_x = 3 - x; new_y = 3 - y; break;
-                    case 3: new_x = 3 - y; new_y = x; break;
-                    case 4: new_x = 3 - x; new_y = y; break;
-                    case 5: new_x = y; new_y = x; break;
-                    case 6: new_x = x; new_y = 3 - y; break;
-                    case 7: new_x = 3 - y; new_y = 3 - x; break;
-                }
-                h_iso_lut_4x4[iso][y * 4 + x] = static_cast<uint8_t>(new_y * 4 + new_x);
-            }
-        }
-    }
-    cudaMemcpyToSymbol(d_iso_lut_4x4, h_iso_lut_4x4, sizeof(h_iso_lut_4x4));
+    // 2. Load the Fractal Codes
+    std::ifstream file(codes_file, std::ios::binary | std::ios::ate);
+    if (!file) return 1;
+    std::streamsize size = file.tellg();
+    file.seekg(0, std::ios::beg);
 
-    // 3. GPU Memory Allocation
-    FractalCode* d_codes;
+    int total_codes = size / sizeof(HybridCode);
+    std::vector<HybridCode> h_codes(total_codes);
+    file.read(reinterpret_cast<char*>(h_codes.data()), size);
+
+    // 3. GPU Allocation
+    HybridCode* d_codes;
     float *d_buffer_A, *d_buffer_B;
-    
-    cudaMalloc(&d_codes, TOTAL_RANGES * sizeof(FractalCode));
-    cudaMalloc(&d_buffer_A, TOTAL_PIXELS * sizeof(float));
-    cudaMalloc(&d_buffer_B, TOTAL_PIXELS * sizeof(float));
 
-    cudaMemcpy(d_codes, h_codes.data(), TOTAL_RANGES * sizeof(FractalCode), cudaMemcpyHostToDevice);
+    cudaMalloc(&d_codes, total_codes * sizeof(HybridCode));
+    cudaMalloc(&d_buffer_A, total_pixels * sizeof(float));
+    cudaMalloc(&d_buffer_B, total_pixels * sizeof(float));
 
-    // Initialize Buffer A with mid-gray (0.5f) to start the fractal generation
-    std::vector<float> initial_noise(TOTAL_PIXELS, 0.5f);
-    cudaMemcpy(d_buffer_A, initial_noise.data(), TOTAL_PIXELS * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_codes, h_codes.data(), total_codes * sizeof(HybridCode), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_buffer_A, h_prev_frame.data(), total_pixels * sizeof(float), cudaMemcpyHostToDevice);
 
     // 4. The Decoding Ping-Pong Loop
     int threads = 256;
-    int blocks = (TOTAL_RANGES + threads - 1) / threads;
+    int blocks = (total_codes + threads - 1) / threads;
+    
+    // 3 iterations are plenty because the seed frame acts as a highly accurate baseline
+    int iterations = 3; 
 
-    std::cout << "Starting 8-iteration GPU decoding sequence...\n";
-    for (int iter = 0; iter < 16; iter++) {
+    std::cout << "Seeding decoder with " << prev_file << "...\n";
+    std::cout << "Running " << iterations << " iterations...\n";
+
+    for (int iter = 0; iter < iterations; iter++) {
         if (iter % 2 == 0) {
-            decodeFractalKernel<<<blocks, threads>>>(d_codes, d_buffer_A, d_buffer_B, TOTAL_RANGES);
+            hybridTemporalDecodeQuadtreeKernel<<<blocks, threads>>>(d_codes, d_buffer_A, d_buffer_B, total_codes);
         } else {
-            decodeFractalKernel<<<blocks, threads>>>(d_codes, d_buffer_B, d_buffer_A, TOTAL_RANGES);
+            hybridTemporalDecodeQuadtreeKernel<<<blocks, threads>>>(d_codes, d_buffer_B, d_buffer_A, total_codes);
         }
         cudaDeviceSynchronize();
-        std::cout << "  Iteration " << iter + 1 << " complete.\n";
     }
 
-    // 5. Download the final image
-    // Because we run 8 iterations (an even number), the final result lands back in d_buffer_A
-    std::vector<float> h_final_image(TOTAL_PIXELS);
-    cudaMemcpy(h_final_image.data(), d_buffer_A, TOTAL_PIXELS * sizeof(float), cudaMemcpyDeviceToHost);
-
-    // 6. Save to disk
-    const char* out_file = "decoded_output.pgm";
-    if (writePGM(out_file, h_final_image)) {
-        std::cout << "Success! Decoded image saved as: " << out_file << "\n";
+    // 5. Download the Final Image
+    std::vector<float> h_final_image(total_pixels);
+    if (iterations % 2 == 0) {
+        cudaMemcpy(h_final_image.data(), d_buffer_A, total_pixels * sizeof(float), cudaMemcpyDeviceToHost);
     } else {
-        std::cerr << "Failed to write image file.\n";
+        cudaMemcpy(h_final_image.data(), d_buffer_B, total_pixels * sizeof(float), cudaMemcpyDeviceToHost);
     }
 
-    // Cleanup
-    cudaFree(d_codes);
-    cudaFree(d_buffer_A);
-    cudaFree(d_buffer_B);
+    // Save as raw float array for the NEXT frame's input
+    std::ofstream out_bin("decoded_current.bin", std::ios::binary);
+    out_bin.write(reinterpret_cast<const char*>(h_final_image.data()), total_pixels * sizeof(float));
 
+    // Save as PGM for your visual inspection
+    if (writePGM("decoded_current.pgm", h_final_image)) {
+        std::cout << "Success! Saved decoded_current.bin (for next frame) and decoded_current.pgm (for viewing).\n";
+    }
+
+    cudaFree(d_codes); cudaFree(d_buffer_A); cudaFree(d_buffer_B);
     return 0;
 }
