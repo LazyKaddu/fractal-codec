@@ -37,4 +37,16 @@ set_target_properties(fractal_cli PROPERTIES CUDA_ARCHITECTURES "89;86;75")
 # TARGET 3: Tests
 # ---------------------------------------------
 enable_testing()
+include(FetchContent)
+
+FetchContent_Declare(
+    googletest
+    URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.zip
+)
+
+# Prevent GoogleTest from overriding compiler/linker settings
+# of the parent project.
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+
+FetchContent_MakeAvailable(googletest)
 add_subdirectory(tests)
