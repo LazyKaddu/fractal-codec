@@ -33,6 +33,18 @@ public:
     bool readFrame(cv::Mat& frame);
 
     /**
+     * @brief Get the next frame, checking against total frames.
+     * @return The frame, or an empty cv::Mat if at the end.
+     */
+    cv::Mat getNextFrame();
+
+    /**
+     * @brief Get the current frame index.
+     */
+    int getCurrentFrameIndex() const;
+
+
+    /**
      * @brief Get the total number of frames in the video.
      */
     int getTotalFrames() const;
@@ -55,6 +67,7 @@ public:
 private:
     std::unique_ptr<cv::VideoCapture> cap_;
     std::string filepath_;
+    int current_frame_index_ = 0;
 };
 
 } // namespace io

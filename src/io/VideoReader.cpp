@@ -30,7 +30,24 @@ bool VideoReader::readFrame(cv::Mat& frame) {
     }
     // The read() function pulls the next frame from the stream and decodes it.
     // Memory is reused/allocated for the single frame, not the entire video.
-    return cap_->read(frame);
+    bool success = cap_->read(frame);
+    if (success) {
+        current_frame_index_++;
+    }
+    return success;
+}
+
+cv::Mat VideoReader::getNextFrame() {
+    cv::Mat frame;
+    // Check if we are still within the video's total frames
+    if (current_frame_index_ < getTotalFrames()) {
+        readFrame(frame);
+    }
+    return frame;
+}
+
+int VideoReader::getCurrentFrameIndex() const {
+    return current_frame_index_;
 }
 
 int VideoReader::getTotalFrames() const {
