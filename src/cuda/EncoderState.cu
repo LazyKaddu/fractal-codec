@@ -4,6 +4,7 @@
 // The C++ Bitstream processor handles entropy coding of the output data
 #include <fractal/core/FractalBitstreamProcessor.h>
 #include <cuda_runtime.h>
+#include <fractal/cuda/CudaError.cuh>
 #include <vector>
 #include <algorithm>
 #include <iostream>
@@ -28,7 +29,7 @@ cudaTextureObject_t createLinearTexture(float* d_ptr, int size_in_floats) {
     texDesc.readMode = cudaReadModeElementType;
     
     cudaTextureObject_t tex = 0;
-    cudaCreateTextureObject(&tex, &resDesc, &texDesc, nullptr);
+    CUDA_CHECK(cudaCreateTextureObject(&tex, &resDesc, &texDesc, nullptr));
     return tex;
 }
 
@@ -345,12 +346,12 @@ public:
         d_output_codes((w * h) / 4),
         d_output_counter(1)
     {
-        cudaMemset(d_prev_frame.get(), 0, d_prev_frame.byte_size()); // Init black
-        cudaMallocHost(&h_output_codes, d_output_codes.byte_size());
+        CUDA_CHECK(cudaMemset(d_prev_frame.get(), 0, d_prev_frame.byte_size())); // Init black
+        CUDA_CHECK(cudaMallocHost(&h_output_codes, d_output_codes.byte_size()));
     }
 
     ~FractalEncoderState() {
-        cudaFreeHost(h_output_codes);
+        CUDA_CHECK(cudaFreeHost(h_output_codes));
     }
 
     int Encode(const float* raw_in, uint8_t* compressed_out, int max_out_size) {
@@ -358,8 +359,8 @@ public:
         std::swap(d_curr_frame, d_prev_frame);
         
         // 2. Upload new frame
-        cudaMemcpy(d_curr_frame.get(), raw_in, total_pixels * sizeof(float), cudaMemcpyHostToDevice);
-        cudaMemset(d_output_counter.get(), 0, sizeof(int));
+        CUDA_CHECK(cudaMemcpy(d_curr_frame.get(), raw_in, total_pixels * sizeof(float), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemset(d_output_counter.get(), 0, sizeof(int)));
 
         // 3. Build Domains & Textures
         float* dom_ptr = d_domains_8x8.get();
@@ -380,17 +381,17 @@ public:
             d_output_codes.get(), d_output_counter.get(),
             d8_count, width, height
         );
-        cudaDeviceSynchronize();
+        CUDA_CHECK(cudaDeviceSynchronize());
         
         // Destroy textures to prevent leaks
-        cudaDestroyTextureObject(tex_curr);
-        cudaDestroyTextureObject(tex_prev);
-        cudaDestroyTextureObject(tex_dom8);
+        CUDA_CHECK(cudaDestroyTextureObject(tex_curr));
+        CUDA_CHECK(cudaDestroyTextureObject(tex_prev));
+        CUDA_CHECK(cudaDestroyTextureObject(tex_dom8));
 
         // 5. Readback
         int h_counter = 0;
-        cudaMemcpy(&h_counter, d_output_counter.get(), sizeof(int), cudaMemcpyDeviceToHost);
-        cudaMemcpy(h_output_codes, d_output_codes.get(), h_counter * sizeof(HybridCodeData), cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaMemcpy(&h_counter, d_output_counter.get(), sizeof(int), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_output_codes, d_output_codes.get(), h_counter * sizeof(HybridCodeData), cudaMemcpyDeviceToHost));
 
         // 6. Push data to C++ Bitstream Processor
         std::vector<HybridCodeData> codes_vec(h_output_codes, h_output_codes + h_counter);

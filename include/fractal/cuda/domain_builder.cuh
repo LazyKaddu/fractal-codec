@@ -1,6 +1,7 @@
 #pragma once
 #include <fractal/core/common.h>
 #include <cuda_runtime.h>
+#include <fractal/cuda/CudaError.cuh>
 
 // ============================================================
 // Domain Pool Builder (Hybrid Downsampling)
@@ -61,8 +62,8 @@ void buildDomainPools(const float* d_curr_frame, float** d_domains_8x8, float** 
     int d8_count = (IMAGE_WIDTH / 8) * (IMAGE_HEIGHT / 8);
     int d4_count = (IMAGE_WIDTH / 4) * (IMAGE_HEIGHT / 4);
 
-    cudaMalloc(d_domains_8x8, d8_count * 16 * sizeof(float));
-    cudaMalloc(d_domains_4x4, d4_count * 4 * sizeof(float));
+    CUDA_CHECK(cudaMalloc(d_domains_8x8, d8_count * 16 * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(d_domains_4x4, d4_count * 4 * sizeof(float)));
 
     dim3 block(16, 16);
     dim3 grid8((IMAGE_WIDTH / 8 + 15) / 16, (IMAGE_HEIGHT / 8 + 15) / 16);
@@ -70,5 +71,5 @@ void buildDomainPools(const float* d_curr_frame, float** d_domains_8x8, float** 
 
     build8x8DownsampledPoolKernel<<<grid8, block>>>(d_curr_frame, *d_domains_8x8, IMAGE_WIDTH);
     build4x4DownsampledPoolKernel<<<grid4, block>>>(d_curr_frame, *d_domains_4x4, IMAGE_WIDTH);
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
