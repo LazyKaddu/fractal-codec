@@ -10,9 +10,9 @@ find_package(zstd REQUIRED)
 
 # Collect source files
 set(CODEC_SOURCES 
-    src/EncoderState.cu
-    src/DecoderState.cu
-    src/BitWriter.cpp
+    src/cuda/EncoderState.cu
+    src/cuda/DecoderState.cu
+    src/core/DataPacker.cpp
 )
 
 # ---------------------------------------------
@@ -32,3 +32,9 @@ add_executable(fractal_cli src/main.cpp ${CODEC_SOURCES})
 target_include_directories(fractal_cli PUBLIC include)
 target_link_libraries(fractal_cli PRIVATE CUDA::cudart zstd::libzstd_static)
 set_target_properties(fractal_cli PROPERTIES CUDA_ARCHITECTURES "89;86;75")
+
+# ---------------------------------------------
+# TARGET 3: Tests
+# ---------------------------------------------
+enable_testing()
+add_subdirectory(tests)
