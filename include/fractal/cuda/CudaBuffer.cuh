@@ -56,5 +56,5 @@ public:
     size_t byte_size() const { return elements * sizeof(T); }
 };
 
-} // namespace cuda
-} // namespace fractal
+}
+}

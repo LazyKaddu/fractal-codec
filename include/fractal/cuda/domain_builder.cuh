@@ -1,5 +1,5 @@
 #pragma once
-#include "common.h"
+#include <fractal/core/common.h>
 #include <cuda_runtime.h>
 
 // ============================================================
