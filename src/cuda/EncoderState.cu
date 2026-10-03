@@ -1,5 +1,6 @@
 #include <fractal/core/FractalCodec.h>
 #include <fractal/core/common.h>
+#include <fractal/cuda/CudaBuffer.cuh>
 // Assume you saved the C++ BitWriter and Bitstream processor in this header
 #include "FractalBitstreamProcessor.h" 
 #include <cuda_runtime.h>
@@ -327,31 +328,28 @@ BAILOUT_NODE:
 class FractalEncoderState {
 public:
     int width, height, total_pixels;
-    float *d_curr_frame, *d_prev_frame, *d_domains_8x8;
-    HybridCodeData *d_output_codes;
-    int *d_output_counter;
+    fractal::cuda::CudaBuffer<float> d_curr_frame;
+    fractal::cuda::CudaBuffer<float> d_prev_frame;
+    fractal::cuda::CudaBuffer<float> d_domains_8x8;
+    fractal::cuda::CudaBuffer<HybridCodeData> d_output_codes;
+    fractal::cuda::CudaBuffer<int> d_output_counter;
     
     // Pre-allocated host memory for async readback
     HybridCodeData *h_output_codes;
     
-    FractalEncoderState(int w, int h) : width(w), height(h), total_pixels(w * h) {
-        cudaMalloc(&d_curr_frame, total_pixels * sizeof(float));
-        cudaMalloc(&d_prev_frame, total_pixels * sizeof(float));
-        cudaMemset(d_prev_frame, 0, total_pixels * sizeof(float)); // Init black
-
-        int d8_count = (width / 8) * (height / 8);
-        cudaMalloc(&d_domains_8x8, d8_count * 16 * sizeof(float));
-
-        cudaMalloc(&d_output_codes, (total_pixels / 4) * sizeof(HybridCodeData));
-        cudaMalloc(&d_output_counter, sizeof(int));
-        
-        cudaMallocHost(&h_output_codes, (total_pixels / 4) * sizeof(HybridCodeData));
+    FractalEncoderState(int w, int h) : 
+        width(w), height(h), total_pixels(w * h),
+        d_curr_frame(w * h),
+        d_prev_frame(w * h),
+        d_domains_8x8((w / 8) * (h / 8) * 16),
+        d_output_codes((w * h) / 4),
+        d_output_counter(1)
+    {
+        cudaMemset(d_prev_frame.get(), 0, d_prev_frame.byte_size()); // Init black
+        cudaMallocHost(&h_output_codes, d_output_codes.byte_size());
     }
 
     ~FractalEncoderState() {
-        cudaFree(d_curr_frame); cudaFree(d_prev_frame);
-        cudaFree(d_domains_8x8); cudaFree(d_output_codes); 
-        cudaFree(d_output_counter);
         cudaFreeHost(h_output_codes);
     }
 
@@ -360,17 +358,18 @@ public:
         std::swap(d_curr_frame, d_prev_frame);
         
         // 2. Upload new frame
-        cudaMemcpy(d_curr_frame, raw_in, total_pixels * sizeof(float), cudaMemcpyHostToDevice);
-        cudaMemset(d_output_counter, 0, sizeof(int));
+        cudaMemcpy(d_curr_frame.get(), raw_in, total_pixels * sizeof(float), cudaMemcpyHostToDevice);
+        cudaMemset(d_output_counter.get(), 0, sizeof(int));
 
         // 3. Build Domains & Textures
-        buildDomainPools(d_curr_frame, &d_domains_8x8, width, height);
+        float* dom_ptr = d_domains_8x8.get();
+        buildDomainPools(d_curr_frame.get(), &dom_ptr, width, height);
         
-        cudaTextureObject_t tex_curr = createLinearTexture(d_curr_frame, total_pixels);
-        cudaTextureObject_t tex_prev = createLinearTexture(d_prev_frame, total_pixels);
+        cudaTextureObject_t tex_curr = createLinearTexture(d_curr_frame.get(), total_pixels);
+        cudaTextureObject_t tex_prev = createLinearTexture(d_prev_frame.get(), total_pixels);
         
         int d8_count = (width / 8) * (height / 8);
-        cudaTextureObject_t tex_dom8 = createLinearTexture(d_domains_8x8, d8_count * 16);
+        cudaTextureObject_t tex_dom8 = createLinearTexture(d_domains_8x8.get(), d8_count * 16);
         
         // 4. Launch Kernel
         dim3 threads(8, 8); 
@@ -378,7 +377,7 @@ public:
         
         hybridTemporalEncodeCooperativeQuadtree<<<grid, threads>>>(
             tex_curr, tex_prev, tex_dom8,
-            d_output_codes, d_output_counter,
+            d_output_codes.get(), d_output_counter.get(),
             d8_count, width, height
         );
         cudaDeviceSynchronize();
@@ -390,8 +389,8 @@ public:
 
         // 5. Readback
         int h_counter = 0;
-        cudaMemcpy(&h_counter, d_output_counter, sizeof(int), cudaMemcpyDeviceToHost);
-        cudaMemcpy(h_output_codes, d_output_codes, h_counter * sizeof(HybridCodeData), cudaMemcpyDeviceToHost);
+        cudaMemcpy(&h_counter, d_output_counter.get(), sizeof(int), cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_output_codes, d_output_codes.get(), h_counter * sizeof(HybridCodeData), cudaMemcpyDeviceToHost);
 
         // 6. Push data to C++ Bitstream Processor
         std::vector<HybridCodeData> codes_vec(h_output_codes, h_output_codes + h_counter);
