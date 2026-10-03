@@ -5,8 +5,8 @@
 #include <cstring>
 #include <iostream>
 
-// Assuming FractalBitstreamProcessor and HybridCodeData are available via header
-// #include "FractalBitstreamProcessor.h"
+// The C++ Bitstream processor handles entropy coding of the output data
+#include <fractal/core/FractalBitstreamProcessor.h>
 
 __device__ __forceinline__ int getIsoPixel(int px, int py, int dim, int iso) {
     int nx = px, ny = py;

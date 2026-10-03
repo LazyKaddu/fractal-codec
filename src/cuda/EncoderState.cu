@@ -1,8 +1,8 @@
 #include <fractal/core/FractalCodec.h>
 #include <fractal/core/common.h>
 #include <fractal/cuda/CudaBuffer.cuh>
-// Assume you saved the C++ BitWriter and Bitstream processor in this header
-#include "FractalBitstreamProcessor.h" 
+// The C++ Bitstream processor handles entropy coding of the output data
+#include <fractal/core/FractalBitstreamProcessor.h>
 #include <cuda_runtime.h>
 #include <vector>
 #include <algorithm>
