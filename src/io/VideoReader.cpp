@@ -24,6 +24,11 @@ bool VideoReader::isOpened() const {
     return cap_ && cap_->isOpened();
 }
 
+void VideoReader::setTargetResolution(int width, int height) {
+    target_width_ = width;
+    target_height_ = height;
+}
+
 bool VideoReader::readFrame(cv::Mat& frame) {
     if (!isOpened()) {
         return false;
@@ -32,6 +37,9 @@ bool VideoReader::readFrame(cv::Mat& frame) {
     // Memory is reused/allocated for the single frame, not the entire video.
     bool success = cap_->read(frame);
     if (success) {
+        if (target_width_ > 0 && target_height_ > 0) {
+            cv::resize(frame, frame, cv::Size(target_width_, target_height_));
+        }
         current_frame_index_++;
     }
     return success;
@@ -62,11 +70,13 @@ double VideoReader::getFPS() const {
 
 int VideoReader::getWidth() const {
     if (!isOpened()) return 0;
+    if (target_width_ > 0) return target_width_;
     return static_cast<int>(cap_->get(cv::CAP_PROP_FRAME_WIDTH));
 }
 
 int VideoReader::getHeight() const {
     if (!isOpened()) return 0;
+    if (target_height_ > 0) return target_height_;
     return static_cast<int>(cap_->get(cv::CAP_PROP_FRAME_HEIGHT));
 }
 

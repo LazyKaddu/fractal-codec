@@ -26,6 +26,13 @@ public:
     bool isOpened() const;
 
     /**
+     * @brief Set the target resolution. Frames will be automatically resized to this if set.
+     * @param width The target width.
+     * @param height The target height.
+     */
+    void setTargetResolution(int width, int height);
+
+    /**
      * @brief Reads the next frame in the stream without loading the whole video into RAM.
      * @param frame The output frame.
      * @return true if a frame was read, false if the end of the video is reached or an error occurred.
@@ -68,6 +75,8 @@ private:
     std::unique_ptr<cv::VideoCapture> cap_;
     std::string filepath_;
     int current_frame_index_ = 0;
+    int target_width_ = -1;
+    int target_height_ = -1;
 };
 
 } // namespace io
