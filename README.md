@@ -158,6 +158,9 @@ Best Domain Block
 
 ```text
 fractal-codec/
+├── docs/
+│   └── # Technical documentation, CLI guides, and Colab instructions
+│
 ├── include/
 │   └── fractal/
 │       ├── core/
@@ -176,11 +179,17 @@ fractal-codec/
 │   ├── cuda/
 │   │   └── # Parallel search and reduction kernels (.cu)
 │   │
+│   ├── io/
+│   │   └── # Video container demuxers and frame extraction implementation
+│   │
 │   └── main.cpp
 │       └── # CLI entry point
 │
 ├── tests/
 │   └── # GoogleTest test suite with GPU auto-detection fixtures
+│
+├── third_party/
+│   └── # Experimental tools, including Jupyter notebooks for Google Colab testing
 │
 ├── CMakeLists.txt
 │   └── # Target-based CMake configuration for NVCC and CXX
@@ -204,6 +213,8 @@ fractal-codec/
   * Ada Lovelace
   * Hopper
   * Blackwell
+
+> **Note:** If you do not have a compatible local NVIDIA GPU, you can still test and develop the CUDA kernels using our interactive Jupyter notebook on Google Colab. See [docs/COLAB_CUDA.MD](docs/COLAB_CUDA.MD) for a quickstart guide.
 
 ### Software
 
@@ -275,48 +286,34 @@ ctest --test-dir build --output-on-failure
 Compress an input video into a FractalCodec bitstream:
 
 ```bash
-./build/fractal_cli \
-    --encode \
-    --input sample.mp4 \
-    --output encoded.frac \
-    --range-size 4 \
-    --domain-size 8
+./build/fractal_cli encode -i sample.mp4 -o encoded.frc
 ```
 
 ### Parameters
 
 | Parameter       | Description             |
 | --------------- | ----------------------- |
-| `--encode`      | Enable encoding mode    |
-| `--input`       | Input video             |
-| `--output`      | Output `.frac` stream   |
-| `--range-size`  | Range block dimensions  |
-| `--domain-size` | Domain block dimensions |
+| `encode`        | Subcommand to encode    |
+| `-i, --input`   | Input video             |
+| `-o, --output`  | Output `.frc` stream    |
 
 ---
 
-## Decode with Custom Scaling
+## Decode a Video
 
-Decode an encoded bitstream at double the original resolution:
+Decode an encoded bitstream back into a playable video:
 
 ```bash
-./build/fractal_cli \
-    --decode \
-    --input encoded.frac \
-    --output reconstructed.mp4 \
-    --scale 2.0 \
-    --iterations 8
+./build/fractal_cli decode -i encoded.frc -o reconstructed.mp4
 ```
 
 ### Parameters
 
 | Parameter      | Description                                 |
 | -------------- | ------------------------------------------- |
-| `--decode`     | Enable decoding mode                        |
-| `--input`      | Input `.frac` stream                        |
-| `--output`     | Reconstructed video                         |
-| `--scale`      | Output resolution scale                     |
-| `--iterations` | Number of fractal reconstruction iterations |
+| `decode`       | Subcommand to decode                        |
+| `-i, --input`  | Input `.frc` stream                         |
+| `-o, --output` | Reconstructed video                         |
 
 ---
 

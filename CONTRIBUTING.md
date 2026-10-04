@@ -149,6 +149,8 @@ When an NVIDIA GPU is unavailable, hardware-dependent tests should be skipped sa
 
 Host-side tests, mathematical tests, serialization tests, and other tests that do not require CUDA hardware should still execute.
 
+> **Note:** If you do not have a local NVIDIA GPU but wish to test or develop CUDA kernels, you can use Google Colab. See [docs/COLAB_CUDA.MD](docs/COLAB_CUDA.MD) for a step-by-step guide to testing with a free cloud GPU.
+
 Run the test suite with:
 
 ```bash
@@ -360,12 +362,7 @@ Provide the smallest possible command, input, or code example that reproduces th
 For example:
 
 ```bash
-./build/fractal_cli \
-    --encode \
-    --input sample.mp4 \
-    --output output.frac \
-    --range-size 4 \
-    --domain-size 8
+./build/fractal_cli encode -i sample.mp4 -o output.frc
 ```
 
 If the issue depends on a particular input file, provide a minimal reproducible sample whenever possible.
