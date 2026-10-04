@@ -1,11 +1,12 @@
 #include <fractal/core/FractalCodec.h>
 #include <cuda_runtime.h>
+#include <fractal/cuda/CudaBuffer.cuh>
 #include <vector>
 #include <cstring>
 #include <iostream>
 
-// Assuming FractalBitstreamProcessor and HybridCodeData are available via header
-// #include "FractalBitstreamProcessor.h"
+// The C++ Bitstream processor handles entropy coding of the output data
+#include <fractal/core/FractalBitstreamProcessor.h>
 
 __device__ __forceinline__ int getIsoPixel(int px, int py, int dim, int iso) {
     int nx = px, ny = py;
@@ -104,27 +105,26 @@ __global__ void hybridTemporalDecodeQuadtreeKernel(
 class FractalDecoderState {
 public:
     int width, height, total_pixels;
-    float *d_prev, *d_buffer_A, *d_buffer_B;
-    HybridCodeData *d_codes;
+    fractal::cuda::CudaBuffer<float> d_prev;
+    fractal::cuda::CudaBuffer<float> d_buffer_A;
+    fractal::cuda::CudaBuffer<float> d_buffer_B;
+    fractal::cuda::CudaBuffer<HybridCodeData> d_codes;
     int max_codes;
 
-    FractalDecoderState(int w, int h) : width(w), height(h), total_pixels(w * h) {
-        cudaMalloc(&d_prev, total_pixels * sizeof(float));
-        cudaMalloc(&d_buffer_A, total_pixels * sizeof(float));
-        cudaMalloc(&d_buffer_B, total_pixels * sizeof(float));
-
+    FractalDecoderState(int w, int h) : 
+        width(w), height(h), total_pixels(w * h),
+        d_prev(w * h),
+        d_buffer_A(w * h),
+        d_buffer_B(w * h),
+        d_codes((w * h) / 4)
+    {
         // Initialize background to black to start
-        cudaMemset(d_prev, 0, total_pixels * sizeof(float));
-
+        cudaMemset(d_prev.get(), 0, d_prev.byte_size());
         max_codes = total_pixels / 4; 
-        cudaMalloc(&d_codes, max_codes * sizeof(HybridCodeData));
     }
 
     ~FractalDecoderState() {
-        cudaFree(d_prev);
-        cudaFree(d_buffer_A);
-        cudaFree(d_buffer_B);
-        cudaFree(d_codes);
+        // CudaBuffer handles destruction automatically
     }
 
     void Decode(const uint8_t* compressed_in, int compressed_size, float* raw_out) {
@@ -135,12 +135,12 @@ public:
 
         // 2. Upload codes to GPU
         if (total_codes > 0) {
-            cudaMemcpy(d_codes, h_codes.data(), total_codes * sizeof(HybridCodeData), cudaMemcpyHostToDevice);
+            cudaMemcpy(d_codes.get(), h_codes.data(), total_codes * sizeof(HybridCodeData), cudaMemcpyHostToDevice);
         }
 
         // 3. Seed ping-pong buffers with the persistent previous frame
-        cudaMemcpy(d_buffer_A, d_prev, total_pixels * sizeof(float), cudaMemcpyDeviceToDevice);
-        cudaMemcpy(d_buffer_B, d_prev, total_pixels * sizeof(float), cudaMemcpyDeviceToDevice);
+        cudaMemcpy(d_buffer_A.get(), d_prev.get(), d_prev.byte_size(), cudaMemcpyDeviceToDevice);
+        cudaMemcpy(d_buffer_B.get(), d_prev.get(), d_prev.byte_size(), cudaMemcpyDeviceToDevice);
 
         // 4. Execute Ping-Pong Loop
         if (total_codes > 0) {
@@ -149,9 +149,9 @@ public:
             
             for (int iter = 0; iter < 3; iter++) {
                 if (iter % 2 == 0) {
-                    hybridTemporalDecodeQuadtreeKernel<<<blocks, threads>>>(d_codes, d_prev, d_buffer_A, d_buffer_B, total_codes, width, height);
+                    hybridTemporalDecodeQuadtreeKernel<<<blocks, threads>>>(d_codes.get(), d_prev.get(), d_buffer_A.get(), d_buffer_B.get(), total_codes, width, height);
                 } else {
-                    hybridTemporalDecodeQuadtreeKernel<<<blocks, threads>>>(d_codes, d_prev, d_buffer_B, d_buffer_A, total_codes, width, height);
+                    hybridTemporalDecodeQuadtreeKernel<<<blocks, threads>>>(d_codes.get(), d_prev.get(), d_buffer_B.get(), d_buffer_A.get(), total_codes, width, height);
                 }
             }
             cudaDeviceSynchronize();
@@ -159,11 +159,11 @@ public:
 
         // 5. Readback Output (Iteration 2 outputs to d_buffer_B)
         if (raw_out != nullptr) {
-            cudaMemcpy(raw_out, d_buffer_B, total_pixels * sizeof(float), cudaMemcpyDeviceToHost);
+            cudaMemcpy(raw_out, d_buffer_B.get(), d_buffer_B.byte_size(), cudaMemcpyDeviceToHost);
         }
 
         // 6. CRITICAL: Update d_prev for the next frame
-        cudaMemcpy(d_prev, d_buffer_B, total_pixels * sizeof(float), cudaMemcpyDeviceToDevice);
+        cudaMemcpy(d_prev.get(), d_buffer_B.get(), d_prev.byte_size(), cudaMemcpyDeviceToDevice);
     }
 };
 

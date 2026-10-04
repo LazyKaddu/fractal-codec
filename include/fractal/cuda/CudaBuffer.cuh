@@ -36,6 +36,17 @@ public:
         other.elements = 0;
     }
 
+    CudaBuffer& operator=(CudaBuffer&& other) noexcept {
+        if (this != &other) {
+            if (d_ptr) cudaFree(d_ptr);
+            d_ptr = other.d_ptr;
+            elements = other.elements;
+            other.d_ptr = nullptr;
+            other.elements = 0;
+        }
+        return *this;
+    }
+
     // Easy data transfer: Host (CPU) to Device (GPU)
     void copyFromHost(const std::vector<T>& host_data) {
         if (host_data.size() != elements) {
