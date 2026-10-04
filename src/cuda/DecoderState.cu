@@ -1,5 +1,6 @@
 #include <fractal/core/FractalCodec.h>
 #include <cuda_runtime.h>
+#include <fractal/cuda/CudaError.cuh>
 #include <fractal/cuda/CudaBuffer.cuh>
 #include <vector>
 #include <cstring>
@@ -119,7 +120,7 @@ public:
         d_codes((w * h) / 4)
     {
         // Initialize background to black to start
-        cudaMemset(d_prev.get(), 0, d_prev.byte_size());
+        CUDA_CHECK(cudaMemset(d_prev.get(), 0, d_prev.byte_size()));
         max_codes = total_pixels / 4; 
     }
 
@@ -135,12 +136,12 @@ public:
 
         // 2. Upload codes to GPU
         if (total_codes > 0) {
-            cudaMemcpy(d_codes.get(), h_codes.data(), total_codes * sizeof(HybridCodeData), cudaMemcpyHostToDevice);
+            CUDA_CHECK(cudaMemcpy(d_codes.get(), h_codes.data(), total_codes * sizeof(HybridCodeData), cudaMemcpyHostToDevice));
         }
 
         // 3. Seed ping-pong buffers with the persistent previous frame
-        cudaMemcpy(d_buffer_A.get(), d_prev.get(), d_prev.byte_size(), cudaMemcpyDeviceToDevice);
-        cudaMemcpy(d_buffer_B.get(), d_prev.get(), d_prev.byte_size(), cudaMemcpyDeviceToDevice);
+        CUDA_CHECK(cudaMemcpy(d_buffer_A.get(), d_prev.get(), d_prev.byte_size(), cudaMemcpyDeviceToDevice));
+        CUDA_CHECK(cudaMemcpy(d_buffer_B.get(), d_prev.get(), d_prev.byte_size(), cudaMemcpyDeviceToDevice));
 
         // 4. Execute Ping-Pong Loop
         if (total_codes > 0) {
@@ -154,16 +155,16 @@ public:
                     hybridTemporalDecodeQuadtreeKernel<<<blocks, threads>>>(d_codes.get(), d_prev.get(), d_buffer_B.get(), d_buffer_A.get(), total_codes, width, height);
                 }
             }
-            cudaDeviceSynchronize();
+            CUDA_CHECK(cudaDeviceSynchronize());
         }
 
         // 5. Readback Output (Iteration 2 outputs to d_buffer_B)
         if (raw_out != nullptr) {
-            cudaMemcpy(raw_out, d_buffer_B.get(), d_buffer_B.byte_size(), cudaMemcpyDeviceToHost);
+            CUDA_CHECK(cudaMemcpy(raw_out, d_buffer_B.get(), d_buffer_B.byte_size(), cudaMemcpyDeviceToHost));
         }
 
         // 6. CRITICAL: Update d_prev for the next frame
-        cudaMemcpy(d_prev.get(), d_buffer_B.get(), d_prev.byte_size(), cudaMemcpyDeviceToDevice);
+        CUDA_CHECK(cudaMemcpy(d_prev.get(), d_buffer_B.get(), d_prev.byte_size(), cudaMemcpyDeviceToDevice));
     }
 };
 
